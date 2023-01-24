@@ -1,15 +1,21 @@
+/*
+TODO:
+1. Get Custom Resource working
+2. Setup Daemon for EC2 UserData
+    Userdata?
+    AMI?
+    something else?
+3. Connect the two pipelines together to show progression.
+*/
+import {readFileSync} from 'fs';
 import { Construct } from "constructs";
 import { Stack, StackProps, CfnOutput, Duration } from "aws-cdk-lib";
 import { aws_ec2 as ec2 } from 'aws-cdk-lib';
-import { aws_ecs as ecs } from 'aws-cdk-lib';
-import { aws_iam as iam } from 'aws-cdk-lib';
 import { aws_sqs as sqs } from 'aws-cdk-lib';
-import { custom_resources as custom_resource } from 'aws-cdk-lib';
-import { aws_autoscaling as autoscaling } from 'aws-cdk-lib';
-import { aws_ecs_patterns as ecsPatterns } from 'aws-cdk-lib';
-import { aws_cloudwatch as cloudwatch } from 'aws-cdk-lib';
 import { Aws } from "aws-cdk-lib";
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
+import AutoScalingEC2 from "./constructs/auto-scaling-ec2";
+import sqsAutoScalingRule from "./constructs/sqs-auto-scaling-rule";
+import { StringParameter } from "aws-cdk-lib/aws-ssm";
 
 export class AwsEc2ProcessingPipelineStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -50,163 +56,67 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
       ],
     });
 
+    /* Create queues */
     const sqsQueue = new sqs.Queue(this, 'queue', {});
+    const sqsQueue2 = new sqs.Queue(this, 'queue2', {});
 
-    const ec2Role = new iam.Role(this, 'MyRole', {
-      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+
+    const queue1Parameter = new StringParameter(this, 'queue1UrlParameter', {
+      parameterName: "/processing-pipeline/queue1",
+      stringValue: sqsQueue.queueUrl,
+    })
+    const queue2Parameter = new StringParameter(this, 'queue2UrlParameter', {
+      parameterName: "/processing-pipeline/queue2",
+      stringValue: sqsQueue2.queueUrl,
     });
 
-    sqsQueue.grantConsumeMessages(ec2Role);
 
-    // Should really just turn this into a daemon, but for now this does the job.
-    const userData = ec2.UserData.forLinux();
-    userData.addCommands(
-      'sudo yum install -y awscli', // install AWS CLI
-      // `echo export AWS_QUEUE_URL="${sqsQueue.queueUrl}" >> /etc/profile`, // Push in Queue URL
-      // `echo export AWS_REGION="${Aws.REGION}" >> /etc/profile`, // Push in Region for aws CLI
-      // read a single message from the queue every one minute.
-      `(crontab -l 2>/dev/null || echo ""; echo "* * * * * while sleep 1; do aws sqs receive-message --region ${Aws.REGION} --queue-url ${sqsQueue.queueUrl}; done") | crontab -`,
-    );
-
-    const launchTemplate = new ec2.LaunchTemplate(this, 'ASG-LaunchTemplate', {
-      instanceType: new ec2.InstanceType('t3.nano'),
-      machineImage: ecs.EcsOptimizedImage.amazonLinux2(),
-      userData: userData,
-      keyName: process.env.KEY_NAME || 'shafkevi',
-      role: ec2Role,
-    });
-
-    const autoScalingGroup = new autoscaling.AutoScalingGroup(this, 'ASG', {
+    /* Create an AutoScaling EC2 Cluster that executes on this queue */
+    /* In reality this would likely be configured with more options for different compute types */
+    let userDataScript = readFileSync('./lib/user-data.sh', 'utf8');
+    userDataScript = userDataScript.replace('_QUEUE1_URL_PARAMETER_',queue1Parameter.parameterName);
+    userDataScript = userDataScript.replace('_QUEUE2_URL_PARAMETER_',queue2Parameter.parameterName);
+    const autoScalingEC2Cluster = new AutoScalingEC2(this, 'AutoScalingEC2', {
       vpc,
-      groupMetrics: [autoscaling.GroupMetrics.all()],
-      vpcSubnets: {
-        // Use any public subnet,
-        subnetType: ec2.SubnetType.PUBLIC,
-        // Use these specific subnets
-        // subnets: vpc.publicSubnets,
-      },
-      launchTemplate: launchTemplate,
-      minCapacity: 1,
-      maxCapacity: 5,
+      userDataCommands: userDataScript.split('\n')
     });
 
+    /* Allow the EC2 instances in the auto scaling cluster to read from the queue */
+    sqsQueue.grantConsumeMessages(autoScalingEC2Cluster.ec2Role);
+    /* Allow EC2 instances in the auto scaling cluster to write to the next queue */
+    sqsQueue2.grantSendMessages(autoScalingEC2Cluster.ec2Role);
 
-    // CFN doesn't support this yet.
-    // const sqsMetric = new cloudwatch.Metric({
-    //   namespace: 'AWS/SQS',
-    //   metricName: 'ApproximateNumberOfMessagesVisible',
-    //   dimensionsMap: {
-    //     Name: "QueueName",
-    //     Value: sqsQueue.queueName,
-    //   },
-    //   statistic: "avg",
-    //   period: Duration.minutes(1),
-    // });
-    // const asgMetric = new cloudwatch.Metric({
-    //   namespace: 'AWS/AutoScaling',
-    //   metricName: 'GroupInServiceInstances',
-    //   dimensionsMap: {
-    //     Name: "AutoScalingGroupName",
-    //     Value: autoScalingGroup.autoScalingGroupName,
-    //   },
-    //   statistic: "avg",
-    //   period: Duration.minutes(1)
-    // });
-    // // Need to do a custom resource...
-    // // CFN doesn't support MathExpressions for TargetTrackingPolicies yet.
-    // const computedMetric = new cloudwatch.MathExpression({
-    //   expression: "messages / instances",
-    //   usingMetrics: {
-    //     messages: sqsMetric,
-    //     instances: asgMetric,
-    //   },
-    //   period: Duration.minutes(1),
-    // });
+    queue1Parameter.grantRead(autoScalingEC2Cluster.ec2Role);
+    queue2Parameter.grantRead(autoScalingEC2Cluster.ec2Role);
+
+    /* Configure the AutoScaling cluster to scale based on queue depth */
+    new sqsAutoScalingRule(this, 'SQSAutoScalingRule', {
+      queue: sqsQueue,
+      autoScalingGroup: autoScalingEC2Cluster.autoScalingGroup,
+    })
 
 
-    // This isn't working for some reason. Probably SDK version differences...
-    // const sqsTargetTrackingScalingPolicy = new custom_resource.AwsCustomResource(this, 'SQSTargetTrackingScalingPolicyCR', {
-    //   onUpdate: {
-    //     service: 'AutoScaling',
-    //     action: 'putScalingPolicy',
-    //     physicalResourceId: custom_resource.PhysicalResourceId.of(Date.now().toString()),
-    //     parameters: {
-    //       AutoScalingGroupName: autoScalingGroup.autoScalingGroupName,
-    //       PolicyName: 'sqs-target-tracking-scaling-policy-v1',
-    //       PolicyType: 'TargetTrackingScaling',
-    //       TargetTrackingConfiguration: {
-    //         "CustomizedMetricSpecification": {
-    //           "Metrics": [
-    //             {
-    //               "Label": "Get the queue size (the number of messages waiting to be processed)",
-    //               "Id": "m1",
-    //               "MetricStat": {
-    //                 "Metric": {
-    //                   "MetricName": "ApproximateNumberOfMessagesVisible",
-    //                   "Namespace": "AWS/SQS",
-    //                   "Dimensions": [
-    //                     {
-    //                       "Name": "QueueName",
-    //                       "Value": sqsQueue.queueName,
-    //                     }
-    //                   ]
-    //                 },
-    //                 "Stat": "Sum"
-    //               },
-    //               "ReturnData": false
-    //             },
-    //             {
-    //               "Label": "Get the group size (the number of InService instances)",
-    //               "Id": "m2",
-    //               "MetricStat": {
-    //                 "Metric": {
-    //                   "MetricName": "GroupInServiceInstances",
-    //                   "Namespace": "AWS/AutoScaling",
-    //                   "Dimensions": [
-    //                     {
-    //                       "Name": "AutoScalingGroupName",
-    //                       "Value": autoScalingGroup.autoScalingGroupName,
-    //                     }
-    //                   ]
-    //                 },
-    //                 "Stat": "Average"
-    //               },
-    //               "ReturnData": false
-    //             },
-    //             {
-    //               "Label": "Calculate the backlog per instance",
-    //               "Id": "e1",
-    //               "Expression": "m1 / m2",
-    //               "ReturnData": true
-    //             }
-    //           ]
-    //         },
-    //         "TargetValue": 1
-    //       }
-    //     }
-    //   },
-    //   onDelete: {
-    //     service: 'AutoScaling',
-    //     action: 'deletePolicy',
-    //     parameters: {
-    //       AutoScalingGroupName: autoScalingGroup.autoScalingGroupName,
-    //       PolicyName: 'sqs-target-tracking-scaling-policy-v1',
-    //     }
-    //   },
-    //   policy: custom_resource.AwsCustomResourcePolicy.fromSdkCalls({
-    //     resources: custom_resource.AwsCustomResourcePolicy.ANY_RESOURCE,
-    //   }),
-    // });
-    // const sqsTargetTrackingScalingPolicy = new autoscaling.TargetTrackingScalingPolicy(this, 'SQSTargetTrackingScalingPolicy', {
-    //   autoScalingGroup: autoScalingGroup,
-    //   targetValue: 2,
-    //   customMetric: computedMetric,
-    // });
+    /* Create a second one for the pipeline */
 
-    // create launch config (or launch template)
-    // create auto scaling group
-    // create target tracking policy and attach to auto scaling group
-    // profit
+    /* Create an AutoScaling EC2 Cluster that executes on this queue */
+    /* In reality this would likely be configured with more options for different compute types */
+
+    let userDataScript2 = readFileSync('./lib/user-data-2.sh', 'utf8');
+    userDataScript2 = userDataScript2.replace('_QUEUE2_URL_PARAMETER_',queue2Parameter.parameterName);
+    const autoScalingEC2Cluster2 = new AutoScalingEC2(this, 'AutoScalingEC2-2', {
+      vpc,
+      userDataCommands: userDataScript2.split('\n')
+    });
+
+    /* Allow the EC2 instances in the auto scaling cluster to read from the queue */
+    sqsQueue2.grantConsumeMessages(autoScalingEC2Cluster2.ec2Role);
+    queue2Parameter.grantRead(autoScalingEC2Cluster2.ec2Role);
+
+    /* Configure the AutoScaling cluster to scale based on queue depth */
+    new sqsAutoScalingRule(this, 'SQSAutoScalingRule2', {
+      queue: sqsQueue2,
+      autoScalingGroup: autoScalingEC2Cluster2.autoScalingGroup,
+    })
 
   }
 }
