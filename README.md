@@ -1,6 +1,6 @@
-# Welcome to your CDK TypeScript project
+# Welcome to your Processing Pipeline Repo
 
-This is a blank project for CDK development with TypeScript.
+![Architecture](architecture.svg)
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
