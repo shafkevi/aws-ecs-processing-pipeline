@@ -13,7 +13,7 @@ queue2=\$(aws ssm get-parameter --name _QUEUE2_URL_PARAMETER_ | jq -r '.Paramete
 while sleep 15;
 do
 
-aws autoscaling set-instance-protection --instance-ids \$instanceId --auto-scaling-group-name \$autoScalingGroupName --protected-from-scale-in
+#aws autoscaling set-instance-protection --instance-ids \$instanceId --auto-scaling-group-name \$autoScalingGroupName --protected-from-scale-in
 
 echo "Looking for a message";
 message=\$(aws sqs receive-message --queue-url \$queue1)
@@ -34,7 +34,7 @@ else
   echo "Message Deleted";
 fi
 
-aws autoscaling set-instance-protection --instance-ids \$instanceId --auto-scaling-group-name \$autoScalingGroupName --no-protected-from-scale-in
+#aws autoscaling set-instance-protection --instance-ids \$instanceId --auto-scaling-group-name \$autoScalingGroupName --no-protected-from-scale-in
 
 done;
 
