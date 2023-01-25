@@ -1,11 +1,13 @@
 import { Construct } from "constructs";
-import { CfnOutput } from "aws-cdk-lib";
+import { CfnOutput, Tags } from "aws-cdk-lib";
 import { aws_ec2 as ec2 } from 'aws-cdk-lib';
 import { aws_iam as iam } from 'aws-cdk-lib';
 import { aws_autoscaling as autoscaling } from 'aws-cdk-lib';
 import { aws_ecs as ecs } from 'aws-cdk-lib';
+import { Policy } from "aws-cdk-lib/aws-iam";
 
 export interface AutoScalingEC2Props {
+  name: string,
   vpc: ec2.Vpc,
   userDataCommands: string[],
 }
@@ -18,6 +20,7 @@ export default class AutoScalingEC2 extends Construct {
     super(scope, id);
 
     const { 
+      name,
       vpc,
       userDataCommands,
     } = props;
@@ -36,6 +39,7 @@ export default class AutoScalingEC2 extends Construct {
     );
 
     const launchTemplate = new ec2.LaunchTemplate(this, 'ASG-LaunchTemplate', {
+      launchTemplateName: `LT-${name}`,
       instanceType: new ec2.InstanceType('t3.small'),
       machineImage: ecs.EcsOptimizedImage.amazonLinux2(),
       userData: userData,
@@ -44,6 +48,7 @@ export default class AutoScalingEC2 extends Construct {
     });
 
     this.autoScalingGroup = new autoscaling.AutoScalingGroup(this, 'ASG', {
+      autoScalingGroupName: `ASG-${name}`,
       vpc,
       groupMetrics: [autoscaling.GroupMetrics.all()],
       vpcSubnets: {
@@ -56,6 +61,21 @@ export default class AutoScalingEC2 extends Construct {
       minCapacity: 1,
       maxCapacity: 5,
     });
+    /* Allows EC2 instances to update their own autoscaling protection policy */
+    this.ec2Role.attachInlinePolicy(new Policy(this, 'UpdateScalingProtectionPolicy', {
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['autoscaling:SetInstanceProtection'],
+          resources: [this.autoScalingGroup.autoScalingGroupArn],
+        }),
+        new iam.PolicyStatement({
+          actions: ['autoscaling:DescribeAutoScalingInstances'],
+          resources: ["*"],
+        }),
+    ],
+    }))
+
+    Tags.of(this.autoScalingGroup).add('appName', name);
 
   }
 }

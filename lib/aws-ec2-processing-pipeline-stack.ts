@@ -17,10 +17,15 @@ import AutoScalingEC2 from "./constructs/auto-scaling-ec2";
 import sqsAutoScalingRule from "./constructs/sqs-auto-scaling-rule";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
 
+export interface CustomStackProps extends StackProps {
+  name: string,
+}
+
 export class AwsEc2ProcessingPipelineStack extends Stack {
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props: CustomStackProps) {
     super(scope, id, props);
 
+    const name = props.name;
 
     const vpc = new ec2.Vpc(this, `ProcessingVPC-${id}`, {
       // cidr: "11.192.0.0/16",
@@ -57,8 +62,12 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
     });
 
     /* Create queues */
-    const sqsQueue = new sqs.Queue(this, 'queue', {});
-    const sqsQueue2 = new sqs.Queue(this, 'queue2', {});
+    const sqsQueue = new sqs.Queue(this, 'queue', {
+      queueName: `Queue-1-${name}`
+    });
+    const sqsQueue2 = new sqs.Queue(this, 'queue2', {
+      queueName: `Queue-2-${name}`
+    });
 
 
     const queue1Parameter = new StringParameter(this, 'queue1UrlParameter', {
@@ -77,6 +86,7 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
     userDataScript = userDataScript.replace('_QUEUE1_URL_PARAMETER_',queue1Parameter.parameterName);
     userDataScript = userDataScript.replace('_QUEUE2_URL_PARAMETER_',queue2Parameter.parameterName);
     const autoScalingEC2Cluster = new AutoScalingEC2(this, 'AutoScalingEC2', {
+      name: `SQS-ASG-1-${name}`,
       vpc,
       userDataCommands: userDataScript.split('\n')
     });
@@ -91,6 +101,7 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
 
     /* Configure the AutoScaling cluster to scale based on queue depth */
     new sqsAutoScalingRule(this, 'SQSAutoScalingRule', {
+      policyName: 'sqs-target-tracking-scaling-policy-queue-1',
       queue: sqsQueue,
       autoScalingGroup: autoScalingEC2Cluster.autoScalingGroup,
     })
@@ -104,6 +115,7 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
     let userDataScript2 = readFileSync('./lib/user-data-2.sh', 'utf8');
     userDataScript2 = userDataScript2.replace('_QUEUE2_URL_PARAMETER_',queue2Parameter.parameterName);
     const autoScalingEC2Cluster2 = new AutoScalingEC2(this, 'AutoScalingEC2-2', {
+      name: `SQS-ASG-2-${name}`,
       vpc,
       userDataCommands: userDataScript2.split('\n')
     });
@@ -114,6 +126,7 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
 
     /* Configure the AutoScaling cluster to scale based on queue depth */
     new sqsAutoScalingRule(this, 'SQSAutoScalingRule2', {
+      policyName: 'sqs-target-tracking-scaling-policy-queue-2',
       queue: sqsQueue2,
       autoScalingGroup: autoScalingEC2Cluster2.autoScalingGroup,
     })

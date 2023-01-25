@@ -6,6 +6,7 @@ import { aws_autoscaling as autoscaling } from 'aws-cdk-lib';
 import { custom_resources as custom_resource } from 'aws-cdk-lib';
 
 export interface sqsAutoScalingRuleProps {
+  policyName: string,
   queue: sqs.Queue,
   autoScalingGroup: autoscaling.AutoScalingGroup,
 }
@@ -18,6 +19,7 @@ export default class sqsAutoScalingRule extends Construct {
     super(scope, id);
 
     const { 
+      policyName,
       queue,
       autoScalingGroup,
     } = props;
@@ -31,7 +33,7 @@ export default class sqsAutoScalingRule extends Construct {
         physicalResourceId: custom_resource.PhysicalResourceId.of(Date.now().toString()),
         parameters: {
           AutoScalingGroupName: autoScalingGroup.autoScalingGroupName,
-          PolicyName: 'sqs-target-tracking-scaling-policy-v1',
+          PolicyName: policyName,
           PolicyType: 'TargetTrackingScaling',
           TargetTrackingConfiguration: {
             "CustomizedMetricSpecification": {
@@ -89,7 +91,7 @@ export default class sqsAutoScalingRule extends Construct {
         action: 'deletePolicy',
         parameters: {
           AutoScalingGroupName: autoScalingGroup.autoScalingGroupName,
-          PolicyName: 'sqs-target-tracking-scaling-policy-v1',
+          PolicyName: policyName,
         }
       },
       policy: custom_resource.AwsCustomResourcePolicy.fromSdkCalls({
