@@ -1,21 +1,12 @@
-/*
-TODO:
-1. Get Custom Resource working
-2. Setup Daemon for EC2 UserData
-    Userdata?
-    AMI?
-    something else?
-3. Connect the two pipelines together to show progression.
-*/
 import {readFileSync} from 'fs';
 import { Construct } from "constructs";
-import { Stack, StackProps, CfnOutput, Duration } from "aws-cdk-lib";
+import { Stack, StackProps } from "aws-cdk-lib";
 import { aws_ec2 as ec2 } from 'aws-cdk-lib';
 import { aws_sqs as sqs } from 'aws-cdk-lib';
-import { Aws } from "aws-cdk-lib";
 import AutoScalingEC2 from "./constructs/auto-scaling-ec2";
 import sqsAutoScalingRule from "./constructs/sqs-auto-scaling-rule";
 import { StringParameter } from "aws-cdk-lib/aws-ssm";
+import ElasticFileSystem from './constructs/elastic-file-system';
 
 export interface CustomStackProps extends StackProps {
   name: string,
@@ -69,6 +60,9 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
       queueName: `Queue-2-${name}`
     });
 
+    const computeSecurityGroup = new ec2.SecurityGroup(this, 'ComputeSecurityGroup', {
+      vpc,
+    });
 
     const queue1Parameter = new StringParameter(this, 'queue1UrlParameter', {
       parameterName: "/processing-pipeline/queue1",
@@ -79,16 +73,29 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
       stringValue: sqsQueue2.queueUrl,
     });
 
+    const fileSystem = new ElasticFileSystem(this, 'EFS', {
+      vpc,
+      securityGroup: computeSecurityGroup,
+      name: 'EFS',
+    })
 
     /* Create an AutoScaling EC2 Cluster that executes on this queue */
     /* In reality this would likely be configured with more options for different compute types */
+    const appNameReplace = /_APP_NAME_/gi;
     let userDataScript = readFileSync('./lib/user-data.sh', 'utf8');
     userDataScript = userDataScript.replace('_QUEUE1_URL_PARAMETER_',queue1Parameter.parameterName);
     userDataScript = userDataScript.replace('_QUEUE2_URL_PARAMETER_',queue2Parameter.parameterName);
+    userDataScript = userDataScript.replace('_EFS_VOLUME_ID_',fileSystem.fileSystem.fileSystemId);
+    userDataScript = userDataScript.replace(appNameReplace,`SQSProcessor1${name}`);
     const autoScalingEC2Cluster = new AutoScalingEC2(this, 'AutoScalingEC2', {
       name: `SQS-ASG-1-${name}`,
       vpc,
-      userDataCommands: userDataScript.split('\n')
+      securityGroup: computeSecurityGroup,
+      userDataCommands: userDataScript.split('\n'),
+      // machineImage: ,
+      // instanceType: ,
+      // minCapacity: 1,
+      // maxCapacity: 5,
     });
 
     /* Allow the EC2 instances in the auto scaling cluster to read from the queue */
@@ -100,10 +107,11 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
     queue2Parameter.grantRead(autoScalingEC2Cluster.ec2Role);
 
     /* Configure the AutoScaling cluster to scale based on queue depth */
-    new sqsAutoScalingRule(this, 'SQSAutoScalingRule', {
+    new sqsAutoScalingRule(this, `SQSAutoScalingRule-${name}`, {
       policyName: 'sqs-target-tracking-scaling-policy-queue-1',
       queue: sqsQueue,
       autoScalingGroup: autoScalingEC2Cluster.autoScalingGroup,
+      targetValue: 1, // Configure your desired number of jobs per instance for auto-scaling purposes.
     })
 
 
@@ -111,13 +119,19 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
 
     /* Create an AutoScaling EC2 Cluster that executes on this queue */
     /* In reality this would likely be configured with more options for different compute types */
-
     let userDataScript2 = readFileSync('./lib/user-data-2.sh', 'utf8');
     userDataScript2 = userDataScript2.replace('_QUEUE2_URL_PARAMETER_',queue2Parameter.parameterName);
+    userDataScript2 = userDataScript2.replace('_EFS_VOLUME_ID_',fileSystem.fileSystem.fileSystemId);
+    userDataScript2 = userDataScript2.replace(appNameReplace,`SQSProcessor2${name}`);
     const autoScalingEC2Cluster2 = new AutoScalingEC2(this, 'AutoScalingEC2-2', {
       name: `SQS-ASG-2-${name}`,
       vpc,
+      securityGroup: computeSecurityGroup,
       userDataCommands: userDataScript2.split('\n')
+      // machineImage: ,
+      // instanceType: ,
+      // minCapacity: 1,
+      // maxCapacity: 5,
     });
 
     /* Allow the EC2 instances in the auto scaling cluster to read from the queue */
@@ -125,10 +139,11 @@ export class AwsEc2ProcessingPipelineStack extends Stack {
     queue2Parameter.grantRead(autoScalingEC2Cluster2.ec2Role);
 
     /* Configure the AutoScaling cluster to scale based on queue depth */
-    new sqsAutoScalingRule(this, 'SQSAutoScalingRule2', {
+    new sqsAutoScalingRule(this, `SQSAutoScalingRule2-${name}`, {
       policyName: 'sqs-target-tracking-scaling-policy-queue-2',
       queue: sqsQueue2,
       autoScalingGroup: autoScalingEC2Cluster2.autoScalingGroup,
+      targetValue: 2, // Configure your desired number of jobs per instance for auto-scaling purposes.
     })
 
   }

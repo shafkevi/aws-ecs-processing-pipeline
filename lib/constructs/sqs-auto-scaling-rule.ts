@@ -1,5 +1,4 @@
 import { Construct } from "constructs";
-import { CfnOutput } from "aws-cdk-lib";
 import { aws_iam as iam } from 'aws-cdk-lib';
 import { aws_sqs as sqs } from 'aws-cdk-lib';
 import { aws_autoscaling as autoscaling } from 'aws-cdk-lib';
@@ -9,6 +8,7 @@ export interface sqsAutoScalingRuleProps {
   policyName: string,
   queue: sqs.Queue,
   autoScalingGroup: autoscaling.AutoScalingGroup,
+  targetValue?: number,
 }
 
 export default class sqsAutoScalingRule extends Construct {
@@ -22,6 +22,7 @@ export default class sqsAutoScalingRule extends Construct {
       policyName,
       queue,
       autoScalingGroup,
+      targetValue,
     } = props;
 
 
@@ -30,7 +31,7 @@ export default class sqsAutoScalingRule extends Construct {
       onUpdate: {
         service: 'AutoScaling',
         action: 'putScalingPolicy',
-        physicalResourceId: custom_resource.PhysicalResourceId.of(Date.now().toString()),
+        physicalResourceId: custom_resource.PhysicalResourceId.of(`${id}`),
         parameters: {
           AutoScalingGroupName: autoScalingGroup.autoScalingGroupName,
           PolicyName: policyName,
@@ -82,7 +83,7 @@ export default class sqsAutoScalingRule extends Construct {
                 }
               ]
             },
-            "TargetValue": 1
+            "TargetValue": targetValue || 1
           }
         }
       },

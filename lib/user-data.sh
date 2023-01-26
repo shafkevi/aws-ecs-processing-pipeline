@@ -1,6 +1,48 @@
-yum install -y awscli jq
+# Install basic packages and configure AWS CLI
+yum install -y awscli jq amazon-cloudwatch-agent vim
 aws configure set region `curl --silent http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region`
 
+# Setup CloudWatch logging.
+cat > /root/cloudwatch-config.json << EOF
+{
+    "agent": {
+        "run_as_user": "root"
+    },
+    "logs": {
+        "logs_collected": {
+            "files": {
+                "collect_list": [
+                    {
+                        "file_path": "/var/log/logs",
+                        "log_group_name": "/_APP_NAME_/",
+                        "log_stream_name": "{instance_id}",
+                        "retention_in_days": -1
+                    }
+                ]
+            }
+        }
+    },
+    "metrics": {
+        "metrics_collected": {
+            "statsd": {
+                "metrics_aggregation_interval": 60,
+                "metrics_collection_interval": 10,
+                "service_address": ":1"
+            }
+        }
+    }
+}
+EOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/root/cloudwatch-config.json
+
+# Connect EFS to EC2 instances
+mkdir /root/efs
+echo "_EFS_VOLUME_ID_:/ /root/efs efs _netdev,noresvport,tls,iam 0 0" >> /etc/fstab
+mount -fav
+
+
+# Setup processing script
 cat > /root/queueProcessor.sh << EOF
 #!/bin/bash
 aws configure set region `curl --silent http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region`
@@ -42,13 +84,14 @@ EOF
 
 chmod +x /root/queueProcessor.sh
 
+# Setup Processing Daemon
 cat > /etc/systemd/system/queue-processor.service << EOF
 [Unit]
 Description = sqs processor
 After = network.target
 
 [Service]
-ExecStart = /root/queueProcessor.sh
+ExecStart = /usr/bin/sh -c "/root/queueProcessor.sh > /var/log/logs 2>&1"
 
 EOF
 

@@ -9,7 +9,12 @@ import { Policy } from "aws-cdk-lib/aws-iam";
 export interface AutoScalingEC2Props {
   name: string,
   vpc: ec2.Vpc,
+  securityGroup: ec2.SecurityGroup,
   userDataCommands: string[],
+  instanceType?: ec2.InstanceType,
+  machineImage?: ec2.IMachineImage,
+  minCapacity?: number,
+  maxCapacity?: number,
 }
 
 export default class AutoScalingEC2 extends Construct {
@@ -22,14 +27,20 @@ export default class AutoScalingEC2 extends Construct {
     const { 
       name,
       vpc,
+      securityGroup,
       userDataCommands,
+      instanceType,
+      machineImage,
+      minCapacity,
+      maxCapacity,
     } = props;
 
 
     this.ec2Role = new iam.Role(this, 'MyRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
     });
-
+    this.ec2Role.addManagedPolicy
+    this.ec2Role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'));
 
 
     // Should really just turn this into a daemon, but for now this does the job.
@@ -40,11 +51,12 @@ export default class AutoScalingEC2 extends Construct {
 
     const launchTemplate = new ec2.LaunchTemplate(this, 'ASG-LaunchTemplate', {
       launchTemplateName: `LT-${name}`,
-      instanceType: new ec2.InstanceType('t3.small'),
-      machineImage: ecs.EcsOptimizedImage.amazonLinux2(),
+      instanceType: instanceType || new ec2.InstanceType('t3.small'),
+      machineImage: machineImage || ecs.EcsOptimizedImage.amazonLinux2(),
       userData: userData,
       keyName: process.env.KEY_NAME || 'shafkevi',
       role: this.ec2Role,
+      securityGroup: securityGroup,
     });
 
     this.autoScalingGroup = new autoscaling.AutoScalingGroup(this, 'ASG', {
@@ -58,8 +70,8 @@ export default class AutoScalingEC2 extends Construct {
         // subnets: vpc.publicSubnets,
       },
       launchTemplate: launchTemplate,
-      minCapacity: 1,
-      maxCapacity: 5,
+      minCapacity: minCapacity || 1,
+      maxCapacity: maxCapacity || 5,
     });
     /* Allows EC2 instances to update their own autoscaling protection policy */
     this.ec2Role.attachInlinePolicy(new Policy(this, 'UpdateScalingProtectionPolicy', {
